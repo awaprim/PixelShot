@@ -86,7 +86,7 @@ async fn main() {
 
     let args = std::env::args().skip(1);
     let img_path = take_screenshot().await;
-    let mut edit = true;
+    let mut edit = false;
     for n in args {
         match n.as_str() {
             "--editor" => {
