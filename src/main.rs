@@ -21,7 +21,9 @@ use embedded_graphics::{
 use gdk4::{Display, MemoryTexture};
 use gtk::{glib, prelude::*};
 use gtk4::{
-    self as gtk, EventControllerKey, EventControllerMotion, Picture,
+    self as gtk, ApplicationWindow, Box, Button, ColorChooserDialog, ColorChooserWidget,
+    EventControllerKey, EventControllerMotion, HeaderBar, Label, Picture,
+    builders::ColorChooserWidgetBuilder,
     gdk::{Key, ModifierType},
     glib::Bytes,
 };
@@ -64,9 +66,11 @@ async fn take_screenshot() -> String {
 }
 
 fn handle_debug() {
-    let bytes = include_bytes!("/home/idot/Downloads/fdx.png");
+    let mut file = std::fs::File::open("/home/idot/Downloads/n.png").unwrap();
+    let mut bytes = Vec::new();
+    file.read_to_end(&mut bytes).unwrap();
     let mut lock = RAW_IMAGE.lock().unwrap();
-    *lock = Some(bytes.to_vec());
+    *lock = Some(bytes);
     drop(lock);
     let application = gtk::Application::builder()
         .application_id("me.awaprim.PixelShot")
@@ -211,6 +215,8 @@ fn draw_line_low(x0: i32, y0: i32, x1: i32, y1: i32) {
         }
     }
 }
+static mut COLOR: [u8; 4] = [255, 0, 0, 255];
+static mut WINDOW: Option<ApplicationWindow> = None;
 fn build_ui(application: &gtk::Application) {
     let window = gtk::ApplicationWindow::new(application);
     window.set_default_size(600, 400);
@@ -224,6 +230,40 @@ fn build_ui(application: &gtk::Application) {
         .unwrap();
     let vimg = vimg.into_rgba8();
     let vimg = DynamicImage::ImageRgba8(vimg);
+
+    let menu_button = Button::builder().icon_name("open-menu-symbolic").build();
+
+    menu_button.connect_clicked(|_| {
+        // TODO: open setting menu with more options instead :3
+        let window = unsafe {
+            let Some(window) = &*&raw const WINDOW else {
+                panic!("how");
+            };
+            window
+        };
+
+        let picker = ColorChooserDialog::new(Some("pick color"), Some(window));
+        picker.run_async(|picker, resp| {
+            let color = picker.rgba();
+            unsafe {
+                COLOR = [
+                    (color.red() * 255.0) as u8,
+                    (color.green() * 255.0) as u8,
+                    (color.blue() * 255.0) as u8,
+                    (color.alpha() * 255.0) as u8,
+                ];
+            };
+            picker.close();
+        });
+    });
+    let toolbar = HeaderBar::new();
+    toolbar.pack_start(&menu_button);
+
+    window.set_titlebar(Some(&toolbar));
+
+    let main_box = Box::new(gtk4::Orientation::Horizontal, 10);
+    // let wbox = Box::new(gtk4::Orientation::Horizontal, 5);
+    // main_box.append(&wbox);
 
     let bytes = vimg.as_bytes();
     let height = vimg.height();
@@ -328,7 +368,9 @@ fn build_ui(application: &gtk::Application) {
     });
     img.add_controller(motion_controller);
 
-    window.set_child(Some(&aspect_frame));
+    main_box.append(&aspect_frame);
+    window.set_child(Some(&main_box));
+    // window.set_child(Some(&aspect_frame));
     unsafe {
         TEST = Some(img);
     }
@@ -342,6 +384,9 @@ fn build_ui(application: &gtk::Application) {
     window.add_controller(key_controller);
 
     window.present();
+    unsafe {
+        WINDOW = Some(window);
+    }
 }
 
 fn draw() {
@@ -368,8 +413,7 @@ fn draw() {
                 &mut *ptr
             };
             let pix = arr.pop_front().unwrap();
-            // TODO: add color selection
-            let pixel = Rgba([255, 0, 0, 255]);
+            let pixel = unsafe { Rgba(COLOR) };
             let circ = Circle::new(Point::new(pix.0, pix.1), 3)
                 .into_styled(PrimitiveStyle::with_fill(Rgb888::WHITE));
             for n in circ.pixels() {
