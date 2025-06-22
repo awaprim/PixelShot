@@ -19,5 +19,7 @@ with image editor:
 
 ### editor keybinds:
 `ctrl+c` -> copy to clipboard
+
 `ctrl+z` -> undo last change
+
 `ctrl+shift+z` -> redo last change (scuffed)
