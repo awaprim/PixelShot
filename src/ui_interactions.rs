@@ -1,6 +1,6 @@
 use gdk4::{Key, ModifierType, glib::Propagation};
 use gtk4::{
-    Button, ColorChooserDialog, EventControllerKey, EventControllerMotion,
+    Button, ColorChooserDialog, EventControllerKey, EventControllerMotion, SpinButton,
     prelude::{ColorChooserExt, DialogExtManual, GtkWindowExt},
 };
 
@@ -8,11 +8,18 @@ use gtk4::{glib, prelude::*};
 
 use crate::{
     CHANGED, COLOR, COPY_TO_CLIPBOARD, IMG_HEIGHT, IMG_WIDTH, LAST_FRAME, LAYERS, NEEDS_FULL,
-    PICTURE_WIDGET, QUEUE, WINDOW, add_layer, draw_line::draw_line,
+    PICTURE_WIDGET, QUEUE, SETTINGS_BOX, SIZE, WINDOW, add_layer, draw_line::draw_line,
 };
 
 pub fn menu_button(_: &Button) {
-    // TODO: open setting menu with more options instead :3
+    unsafe {
+        let Some(settings) = &mut *&raw mut SETTINGS_BOX else {
+            return;
+        };
+        settings.set_visible(!settings.get_visible());
+    }
+}
+pub fn color_picker(_: &Button) {
     let window = unsafe {
         let Some(window) = &*&raw const WINDOW else {
             panic!("how");
@@ -112,6 +119,10 @@ pub fn mouse_move(controller: &EventControllerMotion, x: f64, y: f64) {
             LAST_FRAME = (-1, -1);
         }
     };
+}
+pub fn changed_size(button: &SpinButton) {
+    let new_size = button.value();
+    unsafe { SIZE = new_size as u32 }
 }
 
 pub fn copy_to_clipbard_button(_: &Button) {

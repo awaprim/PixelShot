@@ -13,7 +13,7 @@ use image::{DynamicImage, GenericImage, Rgba};
 
 use crate::{
     ACTIVE_LAYER, CHANGED, COLOR, COPY_TO_CLIPBOARD, IMG_HEIGHT, IMG_READ, IMG_WIDTH, LAYERS,
-    NEEDS_FULL, PICTURE_WIDGET, QUEUE, V_IMG, copy_to_clipboard::copy_to_clipbard,
+    NEEDS_FULL, PICTURE_WIDGET, QUEUE, SIZE, V_IMG, copy_to_clipboard::copy_to_clipbard,
 };
 
 pub fn update_image() {
@@ -115,7 +115,8 @@ pub fn draw() {
             };
             let pix = arr.pop_front().unwrap();
             let pixel = unsafe { Rgba(COLOR) };
-            let circ = Circle::new(Point::new(pix.0, pix.1), 3)
+
+            let circ = Circle::new(Point::new(pix.0, pix.1), unsafe { SIZE })
                 .into_styled(PrimitiveStyle::with_fill(Rgb888::WHITE));
             for n in circ.pixels() {
                 unsafe {

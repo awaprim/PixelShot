@@ -20,13 +20,16 @@ static GLOBAL: MiMalloc = MiMalloc;
 use gdk4::MemoryTexture;
 use gtk::prelude::*;
 use gtk4::{
-    self as gtk, ApplicationWindow, Box, Button, EventControllerKey, EventControllerMotion,
-    HeaderBar, Picture, glib::Bytes,
+    self as gtk, Adjustment, ApplicationWindow, Box, Button, EventControllerKey,
+    EventControllerMotion, HeaderBar, Picture, SpinButton, glib::Bytes,
 };
 use image::{DynamicImage, ImageReader, Rgba};
 use tokio::process::Command;
 
-use crate::image_updating::{draw, update_image};
+use crate::{
+    image_updating::{draw, update_image},
+    ui_interactions::{changed_size, color_picker},
+};
 async fn take_screenshot_wayland_portal() -> String {
     if let Ok(hypr_env) = std::env::var("HYPRLAND_INSTANCE_SIGNATURE") {
         if hypr_env.len() != 0 {
@@ -151,6 +154,7 @@ pub static IMG_READ: Mutex<Option<DynamicImage>> = Mutex::new(None);
 pub static mut CHANGED: bool = false;
 pub static mut QUEUE: VecDeque<(i32, i32)> = VecDeque::new();
 static mut LAST_FRAME: (i32, i32) = (-1, -1);
+pub static mut SIZE: u32 = 3;
 pub static mut NEEDS_FULL: bool = false;
 pub static mut COPY_TO_CLIPBOARD: bool = false;
 pub static mut LAYERS: Vec<(Vec<(i32, i32, Rgba<u8>)>, bool)> = Vec::new();
@@ -158,6 +162,7 @@ pub static mut ACTIVE_LAYER: Option<*mut Vec<(i32, i32, Rgba<u8>)>> = None;
 pub static mut V_IMG: Option<*mut DynamicImage> = None;
 static mut WINDOW: Option<ApplicationWindow> = None;
 pub static mut COLOR: [u8; 4] = [255, 0, 0, 255];
+pub static mut SETTINGS_BOX: Option<Box> = None;
 // TODO: potnetially deal with this mess
 
 fn add_layer() {
@@ -199,8 +204,32 @@ fn build_ui(application: &gtk::Application) {
     window.set_titlebar(Some(&toolbar));
 
     let main_box = Box::new(gtk4::Orientation::Horizontal, 10);
-    // let wbox = Box::new(gtk4::Orientation::Horizontal, 5);
-    // main_box.append(&wbox);
+    let wbox = Box::new(gtk4::Orientation::Horizontal, 33);
+    main_box.append(&wbox);
+    let color_picker_button = Button::builder()
+        .icon_name("color-picker")
+        .margin_top(10)
+        .valign(gtk4::Align::Start)
+        .build();
+    color_picker_button.connect_clicked(color_picker);
+    let adj = Adjustment::builder()
+        .value(3.0)
+        .lower(0.0)
+        .upper(32.0)
+        .step_increment(1.0)
+        .build();
+    let size_input = SpinButton::new(Some(&adj), 1.0, 0);
+    size_input.set_value(3.0);
+    size_input.set_valign(gtk4::Align::Start);
+    size_input.set_margin_top(10);
+    wbox.append(&color_picker_button);
+    wbox.append(&size_input);
+    wbox.set_visible(false);
+    size_input.connect_value_changed(changed_size);
+
+    unsafe {
+        SETTINGS_BOX = Some(wbox);
+    }
 
     let bytes = vimg.as_bytes();
     let height = vimg.height();
