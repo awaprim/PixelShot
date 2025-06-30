@@ -13,7 +13,7 @@ use image::{DynamicImage, GenericImage, Rgba};
 
 use crate::{
     ACTIVE_LAYER, CHANGED, COLOR, COPY_TO_CLIPBOARD, IMG_HEIGHT, IMG_READ, IMG_WIDTH, LAYERS,
-    NEEDS_FULL, PICTURE_WIDGET, QUEUE, SIZE, V_IMG, copy_to_clipboard::copy_to_clipbard,
+    NEEDS_FULL, PICTURE_WIDGET, QUEUE, SAVE_PATH, SIZE, V_IMG, copy_to_clipboard::copy_to_clipbard,
 };
 
 pub fn update_image() {
@@ -80,7 +80,8 @@ pub fn update_image() {
         unsafe {
             if COPY_TO_CLIPBOARD {
                 COPY_TO_CLIPBOARD = false;
-                copy_to_clipbard(&main_vvimg);
+                let path = (&*&raw const SAVE_PATH).clone();
+                copy_to_clipbard(&main_vvimg, path);
             }
         }
 

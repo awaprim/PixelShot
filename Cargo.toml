@@ -6,6 +6,7 @@ edition = "2024"
 
 [dependencies]
 ashpd = "0.11.0"
+chrono = "0.4.41"
 embedded-graphics = "0.8.1"
 gdk4 = "0.9.6"
 gtk4 = { version = "0.9.6", features = ["v4_6", "v4_8"] }

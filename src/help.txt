@@ -1,0 +1,11 @@
+Usage: pixelshot {options}
+
+Examples:
+  capture with editor:        pixelshot --editor
+  capture and save to folder: pixelshot --save $HOME/Pictures/
+
+Options:
+  --help                shows this message
+  --save {path}         saves image to folder
+  --editor              enables editor after capturing
+  --edit {file_path}    allows editing file without taking screenshot

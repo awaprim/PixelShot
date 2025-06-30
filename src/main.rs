@@ -1,7 +1,9 @@
 use std::{
     collections::VecDeque,
     io::{Cursor, Read},
-    process::Stdio,
+    path::PathBuf,
+    process::{self, Stdio},
+    str::FromStr,
     sync::Mutex,
     thread,
     time::Duration,
@@ -86,39 +88,77 @@ async fn take_screenshot() -> String {
     }
 }
 
-fn handle_debug() {
-    let mut file = std::fs::File::open("/home/idot/Downloads/n.png").unwrap();
-    let mut bytes = Vec::new();
-    file.read_to_end(&mut bytes).unwrap();
-    let mut lock = RAW_IMAGE.lock().unwrap();
-    *lock = Some(bytes);
-    drop(lock);
-    let application = gtk::Application::builder()
-        .application_id("me.awaprim.PixelShot")
-        .build();
-    application.connect_activate(build_ui);
-    let args: Vec<&str> = Vec::new();
-    application.run_with_args(&args);
-}
-#[tokio::main(flavor = "current_thread")]
-async fn main() {
-    if cfg!(debug_assertions) {
-        return handle_debug();
-    }
-
-    let args = std::env::args().skip(1);
-    let img_path = take_screenshot().await;
+fn handle_args(mut args: impl Iterator<Item = String>) -> (bool, Option<PathBuf>) {
     let mut edit = false;
-    for n in args {
+    let mut file_to_edit = None;
+    while let Some(n) = args.next() {
         match n.as_str() {
             "--editor" => {
                 edit = true;
             }
+            "--save" => {
+                let Some(path) = args.next() else {
+                    panic!("Invalid path")
+                };
+                let Ok(path) = PathBuf::from_str(&path);
+                unsafe {
+                    SAVE_PATH = Some(path);
+                }
+            }
+            "--help" => {
+                println!("{}", include_str!("./help.txt"));
+                process::exit(0);
+            }
+            "--edit" => {
+                let Some(path) = args.next() else {
+                    panic!("Invalid path")
+                };
+                let Ok(path) = PathBuf::from_str(&path);
+                file_to_edit = Some(path);
+            }
+
             _ => {}
         }
     }
+    (edit, file_to_edit)
+}
+
+#[tokio::main(flavor = "current_thread")]
+async fn main() {
+    let args = std::env::args().skip(1);
+    let (edit, file_to_edit) = handle_args(args);
+
+    if file_to_edit.is_some() {
+        let mut file = std::fs::File::open(file_to_edit.unwrap()).unwrap();
+        let mut bytes = Vec::new();
+        file.read_to_end(&mut bytes).unwrap();
+        let mut lock = RAW_IMAGE.lock().unwrap();
+        *lock = Some(bytes);
+        drop(lock);
+        let application = gtk::Application::builder()
+            .application_id("me.awaprim.PixelShot")
+            .build();
+        application.connect_activate(build_ui);
+        let args: Vec<&str> = Vec::new();
+        application.run_with_args(&args);
+
+        process::exit(0);
+    }
+
+    let img_path = take_screenshot().await;
+
     if !edit {
-        copy_no_ui(img_path).await;
+        let img = ImageReader::open(img_path)
+            .unwrap()
+            .with_guessed_format()
+            .unwrap()
+            .decode()
+            .unwrap();
+        unsafe {
+            let path = (&*&raw const SAVE_PATH).clone();
+
+            copy_to_clipboard::copy_to_clipbard(&img, path);
+        }
     } else {
         let mut file = std::fs::File::open(img_path).unwrap();
         let mut bytes: Vec<u8> = Vec::new();
@@ -138,15 +178,6 @@ async fn main() {
 }
 static RAW_IMAGE: Mutex<Option<Vec<u8>>> = Mutex::new(None);
 
-async fn copy_no_ui(path: String) {
-    let file = std::fs::File::open(path).unwrap();
-    Command::new("wl-copy")
-        .args(["--type", "image/png"])
-        .stdin(Stdio::from(file))
-        .spawn()
-        .unwrap();
-}
-
 pub static mut PICTURE_WIDGET: Option<Picture> = None;
 static mut IMG_WIDTH: i32 = 0;
 static mut IMG_HEIGHT: i32 = 0;
@@ -163,6 +194,7 @@ pub static mut V_IMG: Option<*mut DynamicImage> = None;
 static mut WINDOW: Option<ApplicationWindow> = None;
 pub static mut COLOR: [u8; 4] = [255, 0, 0, 255];
 pub static mut SETTINGS_BOX: Option<Box> = None;
+pub static mut SAVE_PATH: Option<PathBuf> = None;
 // TODO: potnetially deal with this mess
 
 fn add_layer() {
