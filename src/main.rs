@@ -2,9 +2,12 @@ use std::{
     collections::VecDeque,
     io::{Cursor, Read},
     path::PathBuf,
-    process::{self, Stdio},
+    process,
     str::FromStr,
-    sync::Mutex,
+    sync::{
+        Mutex,
+        atomic::{AtomicBool, AtomicI32, AtomicU32},
+    },
     thread,
     time::Duration,
 };
@@ -26,33 +29,38 @@ use gtk4::{
     EventControllerMotion, HeaderBar, Picture, SpinButton, glib::Bytes,
 };
 use image::{DynamicImage, ImageReader, Rgba};
+use once_cell::sync::OnceCell;
 use tokio::process::Command;
 
 use crate::{
-    image_updating::{draw, update_image},
+    image_updating::update_image,
     ui_interactions::{changed_size, color_picker},
 };
 async fn take_screenshot_wayland_portal() -> String {
-    if let Ok(hypr_env) = std::env::var("HYPRLAND_INSTANCE_SIGNATURE") {
-        if hypr_env.len() != 0 {
-            let mut picker = Command::new("hyprpicker")
-                .arg("-r")
-                .arg("-z")
-                .spawn()
-                .unwrap();
-            tokio::time::sleep(Duration::from_millis(250)).await;
-            let response = Screenshot::request()
-                .interactive(true)
-                .modal(true)
-                .send()
-                .await
-                .unwrap()
-                .response()
-                .unwrap();
-            let _ = picker.kill().await;
-            let uri = response.uri();
-            return uri.path().to_string();
-        }
+    if let Ok(hypr_env) = std::env::var("HYPRLAND_INSTANCE_SIGNATURE")
+        && !hypr_env.is_empty()
+    {
+        let _picker = Command::new("hyprpicker")
+            .arg("-r")
+            .arg("-z")
+            .spawn()
+            .unwrap();
+        tokio::time::sleep(Duration::from_millis(250)).await;
+        let response = Screenshot::request()
+            .interactive(true)
+            .modal(true)
+            .send()
+            .await
+            .unwrap()
+            .response()
+            .unwrap();
+        let _ = Command::new("pkill")
+            .args(["-15", "hyprpicker"])
+            .output()
+            .await;
+
+        let uri = response.uri();
+        return uri.path().to_string();
     };
     let response = Screenshot::request()
         .interactive(true)
@@ -63,7 +71,7 @@ async fn take_screenshot_wayland_portal() -> String {
         .response()
         .unwrap();
     let uri = response.uri();
-    return uri.path().to_string();
+    uri.path().to_string()
 }
 async fn take_screenshot() -> String {
     let os = std::env::consts::OS;
@@ -101,9 +109,7 @@ fn handle_args(mut args: impl Iterator<Item = String>) -> (bool, Option<PathBuf>
                     panic!("Invalid path")
                 };
                 let Ok(path) = PathBuf::from_str(&path);
-                unsafe {
-                    SAVE_PATH = Some(path);
-                }
+                let _ = SAVE_PATH.set(path);
             }
             "--help" => {
                 println!("{}", include_str!("./help.txt"));
@@ -154,11 +160,9 @@ async fn main() {
             .unwrap()
             .decode()
             .unwrap();
-        unsafe {
-            let path = (&*&raw const SAVE_PATH).clone();
+        let path = SAVE_PATH.get().cloned();
 
-            copy_to_clipboard::copy_to_clipbard(&img, path);
-        }
+        copy_to_clipboard::copy_to_clipbard(&img, path);
     } else {
         let mut file = std::fs::File::open(img_path).unwrap();
         let mut bytes: Vec<u8> = Vec::new();
@@ -179,33 +183,37 @@ async fn main() {
 static RAW_IMAGE: Mutex<Option<Vec<u8>>> = Mutex::new(None);
 
 pub static mut PICTURE_WIDGET: Option<Picture> = None;
-static mut IMG_WIDTH: i32 = 0;
-static mut IMG_HEIGHT: i32 = 0;
+
+static WIDGET_SIZE: Mutex<(i32, i32)> = Mutex::new((0, 0));
+
+static IMG_WIDTH: AtomicI32 = AtomicI32::new(0);
+static IMG_HEIGHT: AtomicI32 = AtomicI32::new(0);
 pub static IMG_READ: Mutex<Option<DynamicImage>> = Mutex::new(None);
-pub static mut CHANGED: bool = false;
-pub static mut QUEUE: VecDeque<(i32, i32)> = VecDeque::new();
-static mut LAST_FRAME: (i32, i32) = (-1, -1);
-pub static mut SIZE: u32 = 3;
-pub static mut NEEDS_FULL: bool = false;
-pub static mut COPY_TO_CLIPBOARD: bool = false;
-pub static mut LAYERS: Vec<(Vec<(i32, i32, Rgba<u8>)>, bool)> = Vec::new();
-pub static mut ACTIVE_LAYER: Option<*mut Vec<(i32, i32, Rgba<u8>)>> = None;
-pub static mut V_IMG: Option<*mut DynamicImage> = None;
+pub static QUEUE: Mutex<VecDeque<(i32, i32)>> = Mutex::new(VecDeque::new());
+pub static SIZE: AtomicU32 = AtomicU32::new(3);
+pub static NEEDS_FULL: AtomicBool = AtomicBool::new(false);
+pub static COPY_TO_CLIPBOARD: AtomicBool = AtomicBool::new(false);
+pub static LAYERS: Mutex<Vec<(Vec<(i32, i32, Rgba<u8>)>, bool)>> = Mutex::new(Vec::new());
+pub static SAVE_PATH: OnceCell<PathBuf> = OnceCell::new();
+pub static COLOR: Mutex<[u8; 4]> = Mutex::new([128, 0, 128, 255]);
+// pub static SAVE_PATH: OnceCell<PathBuf> = OnceCell::new();
+//
+
 static mut WINDOW: Option<ApplicationWindow> = None;
-pub static mut COLOR: [u8; 4] = [255, 0, 0, 255];
 pub static mut SETTINGS_BOX: Option<Box> = None;
-pub static mut SAVE_PATH: Option<PathBuf> = None;
-// TODO: potnetially deal with this mess
+pub static mut ACTIVE_LAYER: Option<*mut Vec<(i32, i32, Rgba<u8>)>> = None;
+static mut LAST_FRAME: (i32, i32) = (-1, -1);
 
 fn add_layer() {
+    let array = Vec::new();
+    let mut layers = LAYERS.lock().unwrap();
+    layers.push((array, true));
+    let Some(vec) = layers.last_mut() else {
+        panic!("how??")
+    };
+    let vec_ptr = &raw mut vec.0;
+
     unsafe {
-        let array = Vec::new();
-        let layers = &mut *&raw mut LAYERS;
-        layers.push((array, true));
-        let Some(vec) = layers.last_mut() else {
-            panic!("how??")
-        };
-        let vec_ptr = &raw mut vec.0;
         ACTIVE_LAYER = Some(vec_ptr);
     }
 }
@@ -281,10 +289,8 @@ fn build_ui(application: &gtk::Application) {
     drop(lock);
 
     let ratio = width as f32 / height as f32;
-    unsafe {
-        IMG_WIDTH = (width - 1) as i32;
-        IMG_HEIGHT = (height - 1) as i32;
-    }
+    IMG_WIDTH.store((width - 1) as i32, std::sync::atomic::Ordering::Relaxed);
+    IMG_HEIGHT.store((height - 1) as i32, std::sync::atomic::Ordering::Relaxed);
     let img = Picture::for_paintable(&texture);
     img.set_content_fit(gtk4::ContentFit::Fill);
     let aspect_frame = gtk::AspectFrame::new(0.5, 0.5, ratio, false);
@@ -299,14 +305,15 @@ fn build_ui(application: &gtk::Application) {
     main_box.append(&aspect_frame);
     window.set_child(Some(&main_box));
     // window.set_child(Some(&aspect_frame));
+    let mut lock = WIDGET_SIZE.lock().unwrap();
+    lock.0 = img.width();
+    lock.1 = img.height();
+    drop(lock);
     unsafe {
         PICTURE_WIDGET = Some(img);
     }
     thread::spawn(|| {
         update_image();
-    });
-    thread::spawn(|| {
-        draw();
     });
 
     window.add_controller(key_controller);

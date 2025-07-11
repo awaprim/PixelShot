@@ -1,3 +1,4 @@
+#![allow(static_mut_refs)]
 use std::{
     thread,
     time::{Duration, Instant},
@@ -9,11 +10,12 @@ use embedded_graphics::{
     primitives::{Circle, PrimitiveStyle},
 };
 use gdk4::{MemoryTexture, glib::Bytes};
+use gtk4::prelude::WidgetExt;
 use image::{DynamicImage, GenericImage, Rgba};
 
 use crate::{
-    ACTIVE_LAYER, CHANGED, COLOR, COPY_TO_CLIPBOARD, IMG_HEIGHT, IMG_READ, IMG_WIDTH, LAYERS,
-    NEEDS_FULL, PICTURE_WIDGET, QUEUE, SAVE_PATH, SIZE, V_IMG, copy_to_clipboard::copy_to_clipbard,
+    ACTIVE_LAYER, COLOR, COPY_TO_CLIPBOARD, IMG_HEIGHT, IMG_READ, IMG_WIDTH, LAYERS, NEEDS_FULL,
+    PICTURE_WIDGET, QUEUE, SAVE_PATH, SIZE, WIDGET_SIZE, copy_to_clipboard::copy_to_clipbard,
 };
 
 pub fn update_image() {
@@ -23,10 +25,7 @@ pub fn update_image() {
     };
 
     let mut main_vvimg = main_image.clone();
-    let m = &raw mut main_vvimg;
-    unsafe {
-        V_IMG = Some(m);
-    }
+
     let width = main_vvimg.width();
     let height = main_vvimg.height();
     let mut last_iter = 0;
@@ -35,27 +34,25 @@ pub fn update_image() {
         thread::sleep(Duration::from_millis(amount_of_ms.max(0) as u64));
 
         let time = Instant::now();
-        unsafe {
-            if !CHANGED {
-                last_iter = 0;
-                continue;
-            }
-            CHANGED = false;
-        };
+        let changed = draw(&mut main_vvimg);
+        let needs_full = NEEDS_FULL.load(std::sync::atomic::Ordering::Relaxed);
+        let copy = COPY_TO_CLIPBOARD.load(std::sync::atomic::Ordering::Relaxed);
+        if !changed && needs_full && copy {
+            last_iter = 0;
+            continue;
+        }
 
-        unsafe {
-            if NEEDS_FULL {
-                NEEDS_FULL = false;
-                let mut n_img = main_image.clone();
-                let layers = &*&raw const LAYERS;
+        if needs_full {
+            NEEDS_FULL.store(false, std::sync::atomic::Ordering::Relaxed);
+            let mut n_img = main_image.clone();
+            let layers = LAYERS.lock().unwrap();
 
-                for (layer, is_active) in layers.iter().rev() {
-                    if *is_active {
-                        overlay(&mut n_img, layer);
-                    }
+            for (layer, is_active) in layers.iter().rev() {
+                if *is_active {
+                    overlay(&mut n_img, layer);
                 }
-                main_vvimg = n_img;
             }
+            main_vvimg = n_img;
         }
 
         let bytes = main_vvimg.as_bytes();
@@ -70,19 +67,20 @@ pub fn update_image() {
         );
 
         unsafe {
-            let pic = &raw const PICTURE_WIDGET;
-            let Some(x) = &*pic else {
+            let Some(x) = &PICTURE_WIDGET else {
                 panic!("");
             };
+            let mut lock = WIDGET_SIZE.lock().unwrap();
+            lock.0 = x.width();
+            lock.1 = x.height();
+            drop(lock);
             x.set_paintable(Some(&texture));
         }
 
-        unsafe {
-            if COPY_TO_CLIPBOARD {
-                COPY_TO_CLIPBOARD = false;
-                let path = (&*&raw const SAVE_PATH).clone();
-                copy_to_clipbard(&main_vvimg, path);
-            }
+        if copy {
+            COPY_TO_CLIPBOARD.swap(false, std::sync::atomic::Ordering::Relaxed);
+            let path = SAVE_PATH.get().cloned();
+            copy_to_clipbard(&main_vvimg, path);
         }
 
         let elapsed = time.elapsed();
@@ -91,50 +89,42 @@ pub fn update_image() {
     }
 }
 
-pub fn draw() {
-    let img_pointer = unsafe {
-        loop {
-            if let Some(ptr) = V_IMG {
-                break ptr;
-            } else {
-                thread::sleep(Duration::from_millis(100));
-            }
-        }
-    };
-    let img = unsafe { &mut *img_pointer };
-    let arr = unsafe { &mut *&raw mut QUEUE };
-
-    loop {
-        if arr.len() == 0 {
-            thread::sleep(Duration::from_millis(50));
-        } else {
+pub fn draw(img: &mut DynamicImage) -> bool {
+    let mut lock = QUEUE.lock().unwrap();
+    if lock.is_empty() {
+        false
+    } else {
+        let elements = lock.len();
+        let points: Vec<(i32, i32)> = lock.drain(0..elements).collect();
+        drop(lock);
+        let img_width = IMG_WIDTH.load(std::sync::atomic::Ordering::Relaxed);
+        let img_height = IMG_HEIGHT.load(std::sync::atomic::Ordering::Relaxed);
+        let size = SIZE.load(std::sync::atomic::Ordering::Relaxed);
+        let lock = COLOR.lock().unwrap();
+        let pixel = Rgba(*lock);
+        drop(lock);
+        for pix in points {
             let layer = unsafe {
                 let Some(ptr) = ACTIVE_LAYER else {
                     panic!("DRAW");
                 };
                 &mut *ptr
             };
-            let pix = arr.pop_front().unwrap();
-            let pixel = unsafe { Rgba(COLOR) };
 
-            let circ = Circle::new(Point::new(pix.0, pix.1), unsafe { SIZE })
+            let circ = Circle::new(Point::new(pix.0, pix.1), size)
                 .into_styled(PrimitiveStyle::with_fill(Rgb888::WHITE));
             for n in circ.pixels() {
-                unsafe {
-                    if n.0.x >= IMG_WIDTH {
-                        continue;
-                    }
-                    if n.0.y >= IMG_HEIGHT {
-                        continue;
-                    }
+                if n.0.x >= img_width {
+                    continue;
+                }
+                if n.0.y >= img_height {
+                    continue;
                 }
                 layer.push((n.0.x, n.0.y, pixel));
                 img.put_pixel(n.0.x as u32, n.0.y as u32, pixel);
             }
-            unsafe {
-                CHANGED = true;
-            }
         }
+        true
     }
 }
 

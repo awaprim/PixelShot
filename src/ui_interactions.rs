@@ -1,3 +1,4 @@
+#![allow(static_mut_refs)]
 use gdk4::{Key, ModifierType, glib::Propagation};
 use gtk4::{
     Button, ColorChooserDialog, EventControllerKey, EventControllerMotion, SpinButton,
@@ -7,13 +8,13 @@ use gtk4::{
 use gtk4::{glib, prelude::*};
 
 use crate::{
-    CHANGED, COLOR, COPY_TO_CLIPBOARD, IMG_HEIGHT, IMG_WIDTH, LAST_FRAME, LAYERS, NEEDS_FULL,
-    PICTURE_WIDGET, QUEUE, SETTINGS_BOX, SIZE, WINDOW, add_layer, draw_line::draw_line,
+    COLOR, COPY_TO_CLIPBOARD, IMG_HEIGHT, IMG_WIDTH, LAST_FRAME, LAYERS, NEEDS_FULL, QUEUE,
+    SETTINGS_BOX, SIZE, WIDGET_SIZE, WINDOW, add_layer, draw_line::draw_line,
 };
 
 pub fn menu_button(_: &Button) {
     unsafe {
-        let Some(settings) = &mut *&raw mut SETTINGS_BOX else {
+        let Some(settings) = &mut SETTINGS_BOX else {
             return;
         };
         settings.set_visible(!settings.get_visible());
@@ -21,23 +22,23 @@ pub fn menu_button(_: &Button) {
 }
 pub fn color_picker(_: &Button) {
     let window = unsafe {
-        let Some(window) = &*&raw const WINDOW else {
+        let Some(window) = &WINDOW else {
             panic!("how");
         };
         window
     };
 
     let picker = ColorChooserDialog::new(Some("pick color"), Some(window));
-    picker.run_async(|picker, resp| {
+    picker.run_async(|picker, _resp| {
         let color = picker.rgba();
-        unsafe {
-            COLOR = [
-                (color.red() * 255.0) as u8,
-                (color.green() * 255.0) as u8,
-                (color.blue() * 255.0) as u8,
-                (color.alpha() * 255.0) as u8,
-            ];
-        };
+        let mut lock = COLOR.lock().unwrap();
+        *lock = [
+            (color.red() * 255.0) as u8,
+            (color.green() * 255.0) as u8,
+            (color.blue() * 255.0) as u8,
+            (color.alpha() * 255.0) as u8,
+        ];
+        drop(lock);
         picker.close();
     });
 }
@@ -49,40 +50,31 @@ pub fn key_pressed(
     modifier: ModifierType,
 ) -> Propagation {
     if (key.eq(&Key::c) || key.eq(&Key::C)) && modifier.eq(&ModifierType::CONTROL_MASK) {
-        unsafe {
-            CHANGED = true;
-            COPY_TO_CLIPBOARD = true;
-        }
+        COPY_TO_CLIPBOARD.store(true, std::sync::atomic::Ordering::Relaxed);
     }
     if (key.eq(&Key::z) || key.eq(&Key::Z))
         && modifier.eq(&(ModifierType::SHIFT_MASK | ModifierType::CONTROL_MASK))
     {
-        unsafe {
-            let overlays = &mut *&raw mut LAYERS;
-            for (_, active) in overlays.iter_mut() {
-                if !*active {
-                    *active = true;
-                    break;
-                }
+        let mut overlays = LAYERS.lock().unwrap();
+        for (_, active) in overlays.iter_mut() {
+            if !*active {
+                *active = true;
+                break;
             }
-
-            CHANGED = true;
-            NEEDS_FULL = true;
         }
+
+        NEEDS_FULL.store(true, std::sync::atomic::Ordering::Relaxed);
     }
     if (key.eq(&Key::z) || key.eq(&Key::Z)) && modifier.eq(&ModifierType::CONTROL_MASK) {
-        unsafe {
-            let overlays = &mut *&raw mut LAYERS;
-            for (_, active) in overlays.iter_mut().rev() {
-                if *active {
-                    *active = false;
-                    break;
-                }
+        let mut overlays = LAYERS.lock().unwrap();
+        for (_, active) in overlays.iter_mut().rev() {
+            if *active {
+                *active = false;
+                break;
             }
-
-            CHANGED = true;
-            NEEDS_FULL = true;
         }
+
+        NEEDS_FULL.store(true, std::sync::atomic::Ordering::Relaxed);
     }
     glib::Propagation::Proceed
 }
@@ -92,17 +84,16 @@ pub fn mouse_move(controller: &EventControllerMotion, x: f64, y: f64) {
         .current_event_state()
         .eq(&ModifierType::BUTTON1_MASK)
     {
-        let (w, h) = unsafe {
-            let pic = &raw const PICTURE_WIDGET;
-            let Some(x) = &*pic else {
-                panic!("");
-            };
-            (x.width(), x.height())
+        let (w, h) = {
+            let lock = WIDGET_SIZE.lock().unwrap();
+            *lock
         };
-        let (real_height, real_width) = unsafe {
+        let (real_height, real_width) = {
+            let img_height = IMG_HEIGHT.load(std::sync::atomic::Ordering::Relaxed);
+            let img_width = IMG_WIDTH.load(std::sync::atomic::Ordering::Relaxed);
             (
-                (((y as f64 / h as f64).min(1.0) * (IMG_HEIGHT) as f64) as i32).max(0),
-                (((x as f64 / w as f64).min(1.0) * (IMG_WIDTH) as f64) as i32).max(0),
+                (((y / h as f64).min(1.0) * (img_height) as f64) as i32).max(0),
+                (((x / w as f64).min(1.0) * (img_width) as f64) as i32).max(0),
             )
         };
         unsafe {
@@ -110,7 +101,8 @@ pub fn mouse_move(controller: &EventControllerMotion, x: f64, y: f64) {
                 draw_line(LAST_FRAME.0, LAST_FRAME.1, real_width, real_height);
             } else {
                 add_layer();
-                (&mut *&raw mut QUEUE).push_back((real_width, real_height));
+                let mut lock = QUEUE.lock().unwrap();
+                lock.push_back((real_width, real_height));
             }
             LAST_FRAME = (real_width, real_height);
         }
@@ -122,12 +114,9 @@ pub fn mouse_move(controller: &EventControllerMotion, x: f64, y: f64) {
 }
 pub fn changed_size(button: &SpinButton) {
     let new_size = button.value();
-    unsafe { SIZE = new_size as u32 }
+    SIZE.store(new_size as u32, std::sync::atomic::Ordering::Relaxed);
 }
 
 pub fn copy_to_clipbard_button(_: &Button) {
-    unsafe {
-        CHANGED = true;
-        COPY_TO_CLIPBOARD = true;
-    }
+    COPY_TO_CLIPBOARD.store(true, std::sync::atomic::Ordering::Relaxed);
 }

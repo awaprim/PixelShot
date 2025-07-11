@@ -1482,6 +1482,7 @@ dependencies = [
  "gtk4",
  "image",
  "mimalloc",
+ "once_cell",
  "tokio",
 ]
 

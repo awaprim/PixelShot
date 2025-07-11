@@ -43,7 +43,7 @@ pub fn copy_to_clipbard(img: &DynamicImage, file_path: Option<PathBuf>) {
         }
     }
 }
-fn save_to_file(mut path: PathBuf, img: &Vec<u8>) -> Result<(), Box<dyn std::error::Error>> {
+fn save_to_file(mut path: PathBuf, img: &[u8]) -> Result<(), Box<dyn std::error::Error>> {
     let current_date = chrono::Local::now();
     path.push(current_date.to_string() + ".png");
     let mut file = File::create_new(path)?;
