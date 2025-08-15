@@ -36,42 +36,58 @@ use crate::{
     image_updating::update_image,
     ui_interactions::{changed_size, color_picker},
 };
-async fn take_screenshot_wayland_portal() -> String {
+
+async fn take_screenshot_wayland_slurp_grim() -> String {
     if let Ok(hypr_env) = std::env::var("HYPRLAND_INSTANCE_SIGNATURE")
         && !hypr_env.is_empty()
     {
-        let _picker = Command::new("hyprpicker")
+        let mut picker = Command::new("hyprpicker")
             .arg("-r")
             .arg("-z")
             .spawn()
             .unwrap();
         tokio::time::sleep(Duration::from_millis(250)).await;
-        let response = Screenshot::request()
-            .interactive(true)
-            .modal(true)
-            .send()
+
+        let region = Command::new("slurp")
+            .arg("-d")
+            .output()
             .await
             .unwrap()
-            .response()
+            .stdout;
+        let region = String::from_utf8(region).unwrap().replace("\n", "");
+        tokio::time::sleep(Duration::from_millis(200)).await;
+        let _ = Command::new("grim")
+            .arg("-g")
+            .arg(region)
+            .arg("/tmp/screenshot.png")
+            .output()
+            .await
             .unwrap();
+
         let _ = Command::new("pkill")
             .args(["-15", "hyprpicker"])
             .output()
             .await;
-
-        let uri = response.uri();
-        return uri.path().to_string();
+        let _ = picker.kill().await;
+        return "/tmp/screenshot.png".to_string();
     };
-    let response = Screenshot::request()
-        .interactive(true)
-        .modal(true)
-        .send()
+    let region = Command::new("slurp")
+        .arg("-d")
+        .output()
         .await
         .unwrap()
-        .response()
+        .stdout;
+    let region = String::from_utf8(region).unwrap().replace("\n", "");
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    let _ = Command::new("grim")
+        .arg("-g")
+        .arg(region)
+        .arg("/tmp/screenshot.png")
+        .output()
+        .await
         .unwrap();
-    let uri = response.uri();
-    uri.path().to_string()
+
+    "/tmp/screenshot.png".to_string()
 }
 async fn take_screenshot() -> String {
     let os = std::env::consts::OS;
@@ -84,7 +100,7 @@ async fn take_screenshot() -> String {
                 "x11" => {
                     panic!("unimplemented");
                 }
-                "wayland" => take_screenshot_wayland_portal().await,
+                "wayland" => take_screenshot_wayland_slurp_grim().await,
                 _ => {
                     panic!("unimplemented");
                 }
