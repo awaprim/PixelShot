@@ -1,5 +1,6 @@
 #![allow(static_mut_refs)]
 use std::{
+    sync::Arc,
     thread,
     time::{Duration, Instant},
 };
@@ -14,8 +15,8 @@ use gtk4::prelude::WidgetExt;
 use image::{DynamicImage, GenericImage, Rgba};
 
 use crate::{
-    ACTIVE_LAYER, COLOR, COPY_TO_CLIPBOARD, IMG_HEIGHT, IMG_READ, IMG_WIDTH, LAYERS, NEEDS_FULL,
-    PICTURE_WIDGET, QUEUE, SAVE_PATH, SIZE, WIDGET_SIZE, copy_to_clipboard::copy_to_clipbard,
+    ACTIVE_LAYER_X, COLOR, COPY_TO_CLIPBOARD, IMG_HEIGHT, IMG_READ, IMG_WIDTH, LAYERS, Layer, NEEDS_FULL, PICTURE_WIDGET, QUEUE, SAVE_PATH, SIZE, WIDGET_SIZE,
+    copy_to_clipboard::copy_to_clipbard,
 };
 
 pub fn update_image() {
@@ -58,13 +59,7 @@ pub fn update_image() {
         let bytes = main_vvimg.as_bytes();
         let bytes = Bytes::from(bytes);
 
-        let texture = MemoryTexture::new(
-            width as i32,
-            height as i32,
-            gdk4::MemoryFormat::R8g8b8a8,
-            &bytes,
-            (width * 4) as usize,
-        );
+        let texture = MemoryTexture::new(width as i32, height as i32, gdk4::MemoryFormat::R8g8b8a8, &bytes, (width * 4) as usize);
 
         unsafe {
             let Some(x) = &PICTURE_WIDGET else {
@@ -103,16 +98,13 @@ pub fn draw(img: &mut DynamicImage) -> bool {
         let lock = COLOR.lock().unwrap();
         let pixel = Rgba(*lock);
         drop(lock);
-        for pix in points {
-            let layer = unsafe {
-                let Some(ptr) = ACTIVE_LAYER else {
-                    panic!("DRAW");
-                };
-                &mut *ptr
-            };
+        let Some(arc) = ACTIVE_LAYER_X.read().unwrap().clone() else {
+            return false;
+        };
+        let mut layer = arc.lock().unwrap();
 
-            let circ = Circle::new(Point::new(pix.0, pix.1), size)
-                .into_styled(PrimitiveStyle::with_fill(Rgb888::WHITE));
+        for pix in points {
+            let circ = Circle::new(Point::new(pix.0, pix.1), size).into_styled(PrimitiveStyle::with_fill(Rgb888::WHITE));
             for n in circ.pixels() {
                 if n.0.x >= img_width {
                     continue;
@@ -128,8 +120,9 @@ pub fn draw(img: &mut DynamicImage) -> bool {
     }
 }
 
-fn overlay(bottom: &mut DynamicImage, top: &Vec<(i32, i32, Rgba<u8>)>) {
-    for n in top {
+fn overlay(bottom: &mut DynamicImage, top: &Arc<Layer>) {
+    let lock = top.lock().unwrap();
+    for n in lock.iter() {
         bottom.put_pixel(n.0 as u32, n.1 as u32, n.2);
     }
 }

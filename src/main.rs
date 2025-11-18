@@ -5,7 +5,7 @@ use std::{
     process,
     str::FromStr,
     sync::{
-        Mutex,
+        Arc, Mutex, RwLock,
         atomic::{AtomicBool, AtomicI32, AtomicU32},
     },
     thread,
@@ -16,20 +16,17 @@ mod draw_line;
 mod image_updating;
 mod ui_interactions;
 
-use ashpd::desktop::screenshot::Screenshot;
 use mimalloc::MiMalloc;
 
 #[global_allocator]
 static GLOBAL: MiMalloc = MiMalloc;
 
-use gdk4::MemoryTexture;
+use gdk4::{MemoryTexture, glib::property::PropertySet};
 use gtk::prelude::*;
-use gtk4::{
-    self as gtk, Adjustment, ApplicationWindow, Box, Button, EventControllerKey,
-    EventControllerMotion, HeaderBar, Picture, SpinButton, glib::Bytes,
-};
+use gtk4::{self as gtk, Adjustment, ApplicationWindow, Box, Button, EventControllerKey, EventControllerMotion, HeaderBar, Picture, SpinButton, glib::Bytes};
 use image::{DynamicImage, ImageReader, Rgba};
 use once_cell::sync::OnceCell;
+use serde::Deserialize;
 use tokio::process::Command;
 
 use crate::{
@@ -37,59 +34,39 @@ use crate::{
     ui_interactions::{changed_size, color_picker},
 };
 
+#[derive(Deserialize)]
+struct HyprlandActiveWindow {
+    at: Vec<u16>,
+    size: Vec<u16>,
+}
+
+static ACTIVE_WINDOW: AtomicBool = AtomicBool::new(false);
+
 async fn take_screenshot_wayland_slurp_grim() -> String {
     if let Ok(hypr_env) = std::env::var("HYPRLAND_INSTANCE_SIGNATURE")
         && !hypr_env.is_empty()
     {
-        let mut picker = Command::new("hyprpicker")
-            .arg("-r")
-            .arg("-z")
-            .spawn()
-            .unwrap();
+        let mut picker = Command::new("hyprpicker").arg("-r").arg("-z").spawn().unwrap();
         tokio::time::sleep(Duration::from_millis(250)).await;
 
-        let region = Command::new("slurp")
-            .arg("-d")
-            .output()
-            .await
-            .unwrap()
-            .stdout;
+        let region = Command::new("slurp").arg("-d").output().await.unwrap().stdout;
         let region = String::from_utf8(region).unwrap().replace("\n", "");
         tokio::time::sleep(Duration::from_millis(200)).await;
-        let _ = Command::new("grim")
-            .arg("-g")
-            .arg(region)
-            .arg("/tmp/screenshot.png")
-            .output()
-            .await
-            .unwrap();
+        let _ = Command::new("grim").arg("-g").arg(region).arg("/tmp/screenshot.png").output().await.unwrap();
 
-        let _ = Command::new("pkill")
-            .args(["-15", "hyprpicker"])
-            .output()
-            .await;
+        let _ = Command::new("pkill").args(["-15", "hyprpicker"]).output().await;
         let _ = picker.kill().await;
         return "/tmp/screenshot.png".to_string();
     };
-    let region = Command::new("slurp")
-        .arg("-d")
-        .output()
-        .await
-        .unwrap()
-        .stdout;
+    let region = Command::new("slurp").arg("-d").output().await.unwrap().stdout;
     let region = String::from_utf8(region).unwrap().replace("\n", "");
     tokio::time::sleep(Duration::from_millis(200)).await;
-    let _ = Command::new("grim")
-        .arg("-g")
-        .arg(region)
-        .arg("/tmp/screenshot.png")
-        .output()
-        .await
-        .unwrap();
+    let _ = Command::new("grim").arg("-g").arg(region).arg("/tmp/screenshot.png").output().await.unwrap();
 
     "/tmp/screenshot.png".to_string()
 }
 async fn take_screenshot() -> String {
+    let active = ACTIVE_WINDOW.load(std::sync::atomic::Ordering::Relaxed);
     let os = std::env::consts::OS;
     match os {
         "linux" => {
@@ -100,7 +77,13 @@ async fn take_screenshot() -> String {
                 "x11" => {
                     panic!("unimplemented");
                 }
-                "wayland" => take_screenshot_wayland_slurp_grim().await,
+                "wayland" => {
+                    if active {
+                        take_screenshot_active_window_wayland().await
+                    } else {
+                        take_screenshot_wayland_slurp_grim().await
+                    }
+                }
                 _ => {
                     panic!("unimplemented");
                 }
@@ -112,6 +95,34 @@ async fn take_screenshot() -> String {
     }
 }
 
+async fn take_screenshot_active_window_wayland() -> String {
+    let Ok(desktop) = std::env::var("XDG_CURRENT_DESKTOP") else {
+        panic!("Unknown desktop");
+    };
+    match desktop.as_str() {
+        "Hyprland" => {
+            let region = Command::new("hyprctl").args(["-j", "activewindow"]).output().await;
+            if let Ok(region) = region
+                && let Ok(string) = String::from_utf8(region.stdout)
+                && let Ok(parsed) = serde_json::from_str::<HyprlandActiveWindow>(&string)
+            {
+                let _ = Command::new("grim")
+                    .arg("-g")
+                    .arg(format!("{},{} {}x{}", parsed.at[0], parsed.at[1], parsed.size[0], parsed.size[1]))
+                    .arg("/tmp/screenshot.png")
+                    .output()
+                    .await
+                    .unwrap();
+            }
+        }
+        _ => {
+            panic!("unimplemented")
+        }
+    }
+
+    "/tmp/screenshot.png".to_string()
+}
+
 fn handle_args(mut args: impl Iterator<Item = String>) -> (bool, Option<PathBuf>) {
     let mut edit = false;
     let mut file_to_edit = None;
@@ -121,9 +132,7 @@ fn handle_args(mut args: impl Iterator<Item = String>) -> (bool, Option<PathBuf>
                 edit = true;
             }
             "--save" => {
-                let Some(path) = args.next() else {
-                    panic!("Invalid path")
-                };
+                let Some(path) = args.next() else { panic!("Invalid path") };
                 let Ok(path) = PathBuf::from_str(&path);
                 let _ = SAVE_PATH.set(path);
             }
@@ -132,11 +141,12 @@ fn handle_args(mut args: impl Iterator<Item = String>) -> (bool, Option<PathBuf>
                 process::exit(0);
             }
             "--edit" => {
-                let Some(path) = args.next() else {
-                    panic!("Invalid path")
-                };
+                let Some(path) = args.next() else { panic!("Invalid path") };
                 let Ok(path) = PathBuf::from_str(&path);
                 file_to_edit = Some(path);
+            }
+            "--active" => {
+                ACTIVE_WINDOW.store(true, std::sync::atomic::Ordering::Relaxed);
             }
 
             _ => {}
@@ -157,9 +167,7 @@ async fn main() {
         let mut lock = RAW_IMAGE.lock().unwrap();
         *lock = Some(bytes);
         drop(lock);
-        let application = gtk::Application::builder()
-            .application_id("me.awaprim.PixelShot")
-            .build();
+        let application = gtk::Application::builder().application_id("me.awaprim.PixelShot").build();
         application.connect_activate(build_ui);
         let args: Vec<&str> = Vec::new();
         application.run_with_args(&args);
@@ -170,12 +178,7 @@ async fn main() {
     let img_path = take_screenshot().await;
 
     if !edit {
-        let img = ImageReader::open(img_path)
-            .unwrap()
-            .with_guessed_format()
-            .unwrap()
-            .decode()
-            .unwrap();
+        let img = ImageReader::open(img_path).unwrap().with_guessed_format().unwrap().decode().unwrap();
         let path = SAVE_PATH.get().cloned();
 
         copy_to_clipboard::copy_to_clipbard(&img, path);
@@ -188,9 +191,7 @@ async fn main() {
         *lock = Some(bytes);
         drop(lock);
 
-        let application = gtk::Application::builder()
-            .application_id("com.screenshotting-tool.fisch")
-            .build();
+        let application = gtk::Application::builder().application_id("com.screenshotting-tool.fisch").build();
         application.connect_activate(build_ui);
         let args: Vec<&str> = Vec::new();
         application.run_with_args(&args);
@@ -209,29 +210,26 @@ pub static QUEUE: Mutex<VecDeque<(i32, i32)>> = Mutex::new(VecDeque::new());
 pub static SIZE: AtomicU32 = AtomicU32::new(3);
 pub static NEEDS_FULL: AtomicBool = AtomicBool::new(false);
 pub static COPY_TO_CLIPBOARD: AtomicBool = AtomicBool::new(false);
-pub static LAYERS: Mutex<Vec<(Vec<(i32, i32, Rgba<u8>)>, bool)>> = Mutex::new(Vec::new());
+pub static LAYERS: Mutex<Vec<(Arc<Layer>, bool)>> = Mutex::new(Vec::new());
 pub static SAVE_PATH: OnceCell<PathBuf> = OnceCell::new();
 pub static COLOR: Mutex<[u8; 4]> = Mutex::new([128, 0, 128, 255]);
 // pub static SAVE_PATH: OnceCell<PathBuf> = OnceCell::new();
 //
+type Layer = Mutex<Vec<(i32, i32, Rgba<u8>)>>;
 
 static mut WINDOW: Option<ApplicationWindow> = None;
 pub static mut SETTINGS_BOX: Option<Box> = None;
-pub static mut ACTIVE_LAYER: Option<*mut Vec<(i32, i32, Rgba<u8>)>> = None;
+pub static ACTIVE_LAYER_X: RwLock<Option<Arc<Layer>>> = RwLock::new(None);
+// pub static mut ACTIVE_LAYER: Option<*mut Vec<(i32, i32, Rgba<u8>)>> = None;
 static mut LAST_FRAME: (i32, i32) = (-1, -1);
 
 fn add_layer() {
-    let array = Vec::new();
+    let array = Arc::new(Mutex::new(Vec::new()));
     let mut layers = LAYERS.lock().unwrap();
-    layers.push((array, true));
-    let Some(vec) = layers.last_mut() else {
-        panic!("how??")
-    };
-    let vec_ptr = &raw mut vec.0;
+    layers.push((array.clone(), true));
 
-    unsafe {
-        ACTIVE_LAYER = Some(vec_ptr);
-    }
+    let mut lock = ACTIVE_LAYER_X.write().unwrap();
+    *lock = Some(array);
 }
 
 fn build_ui(application: &gtk::Application) {
@@ -240,11 +238,7 @@ fn build_ui(application: &gtk::Application) {
     let mut lock = RAW_IMAGE.lock().unwrap();
     let file = lock.take().unwrap();
     drop(lock);
-    let vimg = ImageReader::new(Cursor::new(file))
-        .with_guessed_format()
-        .unwrap()
-        .decode()
-        .unwrap();
+    let vimg = ImageReader::new(Cursor::new(file)).with_guessed_format().unwrap().decode().unwrap();
     let vimg = vimg.into_rgba8();
     let vimg = DynamicImage::ImageRgba8(vimg);
 
@@ -262,18 +256,9 @@ fn build_ui(application: &gtk::Application) {
     let main_box = Box::new(gtk4::Orientation::Horizontal, 10);
     let wbox = Box::new(gtk4::Orientation::Horizontal, 33);
     main_box.append(&wbox);
-    let color_picker_button = Button::builder()
-        .icon_name("color-picker")
-        .margin_top(10)
-        .valign(gtk4::Align::Start)
-        .build();
+    let color_picker_button = Button::builder().icon_name("color-picker").margin_top(10).valign(gtk4::Align::Start).build();
     color_picker_button.connect_clicked(color_picker);
-    let adj = Adjustment::builder()
-        .value(3.0)
-        .lower(0.0)
-        .upper(32.0)
-        .step_increment(1.0)
-        .build();
+    let adj = Adjustment::builder().value(3.0).lower(0.0).upper(32.0).step_increment(1.0).build();
     let size_input = SpinButton::new(Some(&adj), 1.0, 0);
     size_input.set_value(3.0);
     size_input.set_valign(gtk4::Align::Start);
@@ -290,15 +275,8 @@ fn build_ui(application: &gtk::Application) {
     let bytes = vimg.as_bytes();
     let height = vimg.height();
     let width = vimg.width();
-    println!("{width} {height}");
     let bytes = Bytes::from(&bytes);
-    let texture = MemoryTexture::new(
-        width as i32,
-        height as i32,
-        gdk4::MemoryFormat::R8g8b8a8,
-        &bytes,
-        (width * 4) as usize,
-    );
+    let texture = MemoryTexture::new(width as i32, height as i32, gdk4::MemoryFormat::R8g8b8a8, &bytes, (width * 4) as usize);
 
     let mut lock = IMG_READ.lock().unwrap();
     *lock = Some(vimg);

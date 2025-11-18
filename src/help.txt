@@ -9,3 +9,4 @@ Options:
   --save {path}         saves image to folder
   --editor              enables editor after capturing
   --edit {file_path}    allows editing file without taking screenshot
+  --active              takes screenshot of currently selected window
