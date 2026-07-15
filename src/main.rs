@@ -56,6 +56,7 @@ async fn take_screenshot_wayland_slurp_grim() -> String {
 
         let _ = Command::new("pkill").args(["-15", "hyprpicker"]).output().await;
         let _ = picker.kill().await;
+        remove_hyprpicker_runtime_files();
         return "/tmp/screenshot.png".to_string();
     };
     let region = Command::new("slurp").arg("-d").output().await.unwrap().stdout;
@@ -65,6 +66,26 @@ async fn take_screenshot_wayland_slurp_grim() -> String {
 
     "/tmp/screenshot.png".to_string()
 }
+
+fn remove_hyprpicker_runtime_files() {
+    let Ok(runtime_dir) = std::env::var("XDG_RUNTIME_DIR") else {
+        return;
+    };
+
+    let Ok(entries) = std::fs::read_dir(runtime_dir) else {
+        return;
+    };
+
+    for entry in entries.flatten() {
+        let path = entry.path();
+        let is_hyprpicker_file = entry.file_name().to_string_lossy().starts_with(".hyprpicker")
+            && path.is_file();
+        if is_hyprpicker_file {
+            let _ = std::fs::remove_file(path);
+        }
+    }
+}
+
 async fn take_screenshot() -> String {
     let active = ACTIVE_WINDOW.load(std::sync::atomic::Ordering::Relaxed);
     let os = std::env::consts::OS;
